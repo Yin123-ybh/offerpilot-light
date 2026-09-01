@@ -1,39 +1,16 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OfferPilot Light</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css" />
-</head>
-<body>
-<div id="app-shell" class="shell">
-  <aside id="sidebar" class="sidebar">
-    <div class="brand"><span class="brand-mark">O</span><div><strong>OfferPilot</strong><small>LIGHT WORKSPACE</small></div></div>
-    <button id="newTraining" class="new-btn">＋ 新建训练</button>
-    <nav class="nav"><p class="nav-label">WORKSPACE</p>
-      <button data-view="overviewView" class="nav-item active">⌂ <span>概览</span></button>
-      <button data-view="setupView" class="nav-item">＋ <span>面试训练</span></button>
-      <button data-view="libraryView" class="nav-item">▤ <span>我的题库</span></button>
-    </nav>
-    <div class="sidebar-foot"><div class="avatar">尹</div><div><b>个人工作区</b><small>本机私有数据</small></div></div>
-  </aside>
-  <main class="main">
-    <header class="topbar"><div class="crumb">人才发展 <span>/</span> <b id="crumb">概览</b></div><div class="top-actions"><span class="local-status">● 本机数据</span><button id="settingsBtn" class="icon-btn">⚙ 模型设置</button></div></header>
-    <section id="overviewView" class="view active">
-      <div class="page-head"><div><p class="eyebrow">PERSONAL INTERVIEW OS</p><h1>把每次练习，变成下一份 offer。</h1><p class="sub">简历驱动的技术面试训练，题目、回答和复盘都留在你的电脑里。</p></div><button id="overviewStart" class="primary">开始一次训练 <span>→</span></button></div>
-      <div class="metrics"><div class="metric"><span>训练题套</span><strong id="metricSessions">0</strong><small>本机累计</small></div><div class="metric"><span>已评价题目</span><strong id="metricAnswered">0</strong><small>已完成反馈</small></div><div class="metric"><span>平均得分</span><strong id="metricScore">—</strong><small>基于已评价回答</small></div><div class="metric"><span>当前进度</span><strong id="metricProgress">—</strong><small>最近一套训练</small></div></div>
-      <div class="overview-grid"><article class="panel continue"><div class="panel-title"><div><p class="eyebrow">CONTINUE</p><h2>继续上次训练</h2></div><span class="chip">自动保存</span></div><div id="continueBody" class="empty">还没有训练记录。上传简历，开始你的第一套题。</div></article><article class="panel recent"><div class="panel-title"><div><p class="eyebrow">ACTIVITY</p><h2>最近训练</h2></div><button data-view="libraryView" class="text-btn">查看全部 →</button></div><div id="recentBody" class="record-list"></div></article></div>
-    </section>
-    <section id="setupView" class="view"><div class="section-head"><div><p class="eyebrow">NEW SESSION</p><h1>创建面试训练</h1><p class="sub">信息越完整，题目越贴近你的真实面试。</p></div><span class="step-count">01 / 02</span></div><div class="setup-grid"><form id="setupForm" class="panel form-panel"><label>目标岗位<input id="role" placeholder="例如：Java 后端工程师" required></label><label>岗位描述<textarea id="description" rows="5" placeholder="粘贴 JD、技术栈和业务背景（可选）"></textarea></label><label>简历 PDF<div class="upload"><input id="resume" type="file" accept="application/pdf" required><span id="fileName">点击选择 PDF 简历</span><small>仅在本机解析，不会上传到其他服务</small></div></label><div id="setupError" class="error"></div><button id="generate" class="primary wide" type="submit">生成 15 道专属题目 <span>→</span></button><button id="startVoice" class="secondary wide" type="button">◉ 开始语音模拟面试</button></form><aside class="panel guidance"><p class="eyebrow">WHAT YOU GET</p><h2>一套真正围绕你的题</h2><div class="benefit"><b>01</b><span><strong>简历深挖</strong><small>针对项目、实习与技术决策追问</small></span></div><div class="benefit"><b>02</b><span><strong>多维覆盖</strong><small>基础知识、场景设计与系统思考</small></span></div><div class="benefit"><b>03</b><span><strong>即时反馈</strong><small>逐题评分，记录优势与下一步改进</small></span></div></aside></div></section>
-    <section id="trainingView" class="view"><div class="training-head"><button id="backSetup" class="back-btn">← 返回设置</button><div><p class="eyebrow" id="trainingRole">INTERVIEW SESSION</p><h1>面试训练</h1></div><div class="progress-wrap"><span id="navProgress">0 / 0</span><div class="progress"><i id="progressBar"></i></div></div></div><div class="training-grid"><aside class="panel question-nav"><p class="eyebrow">QUESTION MAP</p><div id="questionList"></div></aside><article class="panel question-panel"><div class="question-meta"><span id="sectionTag" class="tag">基础知识</span><span id="difficultyTag" class="difficulty">中等</span></div><h2 id="question">准备开始</h2><textarea id="answer" rows="9" placeholder="写下你的回答，建议用 STAR 或“结论—依据—例子”组织。"></textarea><div class="answer-bar"><span id="count">0 / 2000</span><button id="submit" class="primary">提交并获取评价 <span>→</span></button></div><div id="feedback" class="feedback hidden"></div><div class="train-actions"><button id="prev" class="secondary">← 上一题</button><button id="next" class="secondary">下一题 →</button></div></article></div></section>
-    <section id="voiceView" class="view"><div class="voice-room panel"><div class="room-top"><button id="voiceExit" class="back-btn">← 退出面试</button><div><p id="voiceRole">语音模拟面试</p><strong id="voiceTimer">进行中</strong></div><button id="voiceFinish" class="secondary">结束并生成报告</button></div><div class="interviewer"><div class="interviewer-photo">AI</div><p id="voiceFocus">简历驱动追问</p><h1 id="voicePrompt">正在连接语音面试官…</h1><small>可点击麦克风进行语音输入，也可以直接输入文字回答。</small></div><div class="voice-answer"><textarea id="voiceAnswer" rows="4" placeholder="输入你的回答…"></textarea><button id="voiceSend" class="primary">提交回答 →</button></div><div class="voice-controls"><div class="live-indicator"><i /> <span id="voiceState">语音输入已暂停</span></div><button id="voiceMic" class="mic-button">⌕</button><p>点击麦克风开始语音输入</p></div><div id="voiceReport" class="feedback hidden"></div></div></section>
-    <section id="libraryView" class="view"><div class="section-head"><div><p class="eyebrow">QUESTION LIBRARY</p><h1>我的题库</h1><p class="sub">每套训练和你的原始回答都会保存在本机，随时回来复盘。</p></div></div><div class="library-stats"><div class="panel"><span>训练题套</span><strong id="libSets">0</strong></div><div class="panel"><span>累计题目</span><strong id="libQuestions">0</strong></div><div class="panel"><span>平均得分</span><strong id="libScore">—</strong></div></div><div id="libraryBody" class="library-list"></div></section>
-  </main>
-</div>
-<div id="settings" class="modal hidden"><div class="modal-card"><div class="modal-head"><div><p class="eyebrow">MODEL CONNECTION</p><h2>连接 AI 大模型</h2></div><button id="closeSettings" class="close">×</button></div><p class="modal-note">配置只保存在当前浏览器的本机存储中。</p><label>API Key<input id="apiKey" type="password" placeholder="sk-..." autocomplete="off"></label><label>Base URL<input id="baseUrl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"></label><label>模型名称<input id="model" placeholder="qwen-plus"></label><div id="settingsSaved" class="saved"></div><button id="saveSettings" class="primary wide">保存模型配置</button></div></div>
-<style>.voice-room{max-width:920px;margin:0 auto;min-height:680px}.room-top{display:grid;grid-template-columns:1fr auto 1fr;align-items:center}.room-top>div{text-align:center}.room-top p{margin:0;color:#73817e;font-size:12px}.room-top strong{display:block;margin-top:5px;color:#284842;font:19px 'DM Mono'}.room-top .secondary{justify-self:end}.interviewer{display:flex;min-height:290px;flex-direction:column;align-items:center;justify-content:center;text-align:center}.interviewer-photo{display:grid;place-items:center;width:86px;height:86px;color:#eff8f5;background:#20766e;border:5px solid #dbece7;border-radius:50%;font:24px 'DM Mono'}.interviewer>p{margin:14px 0 10px;color:#71908b;font-size:12px}.interviewer h1{max-width:700px;margin:0;color:#213734;font-size:25px;line-height:1.5}.interviewer small{margin-top:15px;color:#859492;font-size:12px}.voice-answer{display:flex;gap:12px;align-items:flex-end}.voice-answer textarea{flex:1;min-height:100px;line-height:1.7}.voice-answer .primary{flex:0 0 auto}.voice-controls{display:flex;flex-direction:column;align-items:center;margin-top:22px}.live-indicator{display:flex;align-items:center;gap:7px;color:#6c8580;font-size:12px}.live-indicator i{width:7px;height:7px;background:#4aa77b;border-radius:50%}.mic-button{display:grid;place-items:center;width:64px;height:64px;margin:15px 0 9px;color:#fff;background:#c6cecc;border:6px solid #e4ebe8;border-radius:50%;font-size:24px}.mic-button.listening{background:#1d756c;box-shadow:0 0 0 8px #e0f0eb}.voice-controls p{margin:0;color:#92a09e;font-size:11px}@media(max-width:800px){.room-top{grid-template-columns:1fr auto}.room-top>div{display:none}.voice-answer{flex-direction:column}.voice-answer .primary{width:100%}}</style>
-<script src="/app.js"></script>
-</body></html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>面试小助手</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script type="module" crossorigin src="/assets/index-5nKO_YML.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DAD_BPz6.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
