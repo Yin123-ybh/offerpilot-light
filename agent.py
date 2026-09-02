@@ -19,9 +19,22 @@ app.mount("/assets", StaticFiles(directory=PUBLIC / "assets"), name="assets")
 def db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, role TEXT, questions TEXT, answers TEXT, created_at TEXT, resume_text TEXT, report TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, role TEXT, questions TEXT, answers TEXT, created_at TEXT, resume_text TEXT, report TEXT, finalized INTEGER DEFAULT 0)")
     try: conn.execute("ALTER TABLE sessions ADD COLUMN report TEXT")
     except sqlite3.OperationalError: pass
+    added_finalized = False
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN finalized INTEGER DEFAULT 0")
+        added_finalized = True
+    except sqlite3.OperationalError: pass
+    if added_finalized:
+        # Preserve the visibility of training sets completed before finalization existed.
+        for row in conn.execute("SELECT id, questions, answers FROM sessions").fetchall():
+            questions, answers = json.loads(row[1]), json.loads(row[2])
+            scored = [item for item in answers if item.get("feedback", {}).get("score") is not None]
+            if questions and len(scored) >= len(questions):
+                conn.execute("UPDATE sessions SET finalized=1 WHERE id=?", (row[0],))
+        conn.commit()
     return conn
 
 def parse_json(text: str) -> dict[str, Any]:
@@ -57,7 +70,7 @@ class InterviewAgent:
         raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨、简历驱动的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"目标岗位：{x.role}\n岗位描述：{x.description or x.jobDescription}\n简历：{x.resumeText[:24000]}\n生成{x.questionCount}道题，覆盖基础八股、项目深挖、业务场景、系统设计、反问。每题返回 section、question、reference、difficulty。不要编造经历。格式：{{\"questions\":[...]}}"}])
         questions = [q for q in parse_json(raw).get("questions", []) if q.get("question")]
         if not questions: raise ValueError("模型没有返回有效题目。")
-        sid = int(time.time() * 1000); conn = db(); conn.execute("INSERT INTO sessions (id,role,questions,answers,created_at,resume_text,report) VALUES (?,?,?,?,?,?,?)", (sid, x.role, json.dumps(questions, ensure_ascii=False), "[]", time.strftime("%Y-%m-%dT%H:%M:%S"), x.resumeText[:24000], None)); conn.commit(); conn.close()
+        sid = int(time.time() * 1000); conn = db(); conn.execute("INSERT INTO sessions (id,role,questions,answers,created_at,resume_text,report,finalized) VALUES (?,?,?,?,?,?,?,?)", (sid, x.role, json.dumps(questions, ensure_ascii=False), "[]", time.strftime("%Y-%m-%dT%H:%M:%S"), x.resumeText[:24000], None, 0)); conn.commit(); conn.close()
         return {"questions": questions, "session": {"id": sid, "role": x.role, "trackName": x.role, "questions": questions, "answers": [], "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"), "status": "in_progress", "questionCount": len(questions), "answeredCount": 0}}
 
     async def evaluate(self, x: Evaluate):
@@ -91,10 +104,28 @@ async def generate(x: Generate):
 async def evaluate(x: Evaluate):
     try: return await agent.evaluate(x)
     except Exception as e: raise HTTPException(502, str(e))
+
+def ensure_complete(row: sqlite3.Row):
+    questions, answers = json.loads(row["questions"]), json.loads(row["answers"])
+    scored = [item for item in answers if item.get("feedback", {}).get("score") is not None]
+    if len(scored) < len(questions):
+        raise HTTPException(400, f"还有 {len(questions) - len(scored)} 道题未完成，暂不能归档。")
+
+@app.post("/api/sessions/{session_id}/finalize")
+async def finalize(session_id: int):
+    conn = db(); row = conn.execute("SELECT questions,answers FROM sessions WHERE id=?", (session_id,)).fetchone()
+    if not row:
+        conn.close(); raise HTTPException(404, "训练记录不存在")
+    ensure_complete(row)
+    conn.execute("UPDATE sessions SET finalized=1 WHERE id=?", (session_id,)); conn.commit(); conn.close()
+    return {"ok": True, "sessionId": session_id, "status": "completed"}
+
 @app.post("/api/sessions/{session_id}/report")
 async def report(session_id: int, x: Config):
-    conn = db(); row = conn.execute("SELECT role,questions,answers,report FROM sessions WHERE id=?", (session_id,)).fetchone(); conn.close()
+    conn = db(); row = conn.execute("SELECT role,questions,answers,report FROM sessions WHERE id=?", (session_id,)).fetchone()
     if not row: raise HTTPException(404, "训练记录不存在")
+    ensure_complete(row)
+    conn.execute("UPDATE sessions SET finalized=1 WHERE id=?", (session_id,)); conn.commit(); conn.close()
     if row[3]: return json.loads(row[3])
     answers = json.loads(row[2]); conversation = "\n".join(f"题目：{a.get('question')}\n回答：{a.get('answer')}\n评分：{a.get('feedback',{}).get('score')}" for a in answers)
     raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨的中文技术面试研究员，只输出 JSON，不编造回答中没有的事实。"},{"role":"user","content":f"岗位：{row[0]}\n已评分回答证据：\n{conversation}\n写一份有论文分析感的复盘：结论必须基于具体回答的覆盖度、准确性、表达结构与技术深度；优点和缺口要可验证，建议要可执行。只输出：{{\"headline\":\"结论式标题\",\"score\":0-100,\"summary\":\"120字内的分析摘要\",\"strengths\":[\"3条基于证据的发现\"],\"weaknesses\":[{{\"name\":\"能力维度\",\"score\":0-100,\"advice\":\"针对性的训练建议\"}}],\"nextStep\":\"下一轮可执行训练计划\"}}"}]); result = parse_json(raw)
@@ -116,7 +147,7 @@ async def voice_finish(x: VoiceFinish):
 async def sessions():
     conn = db(); rows = conn.execute("SELECT * FROM sessions ORDER BY id DESC").fetchall(); conn.close(); out=[]
     for row in rows:
-        qs, ans = json.loads(row[2]), json.loads(row[3]); scored=[a for a in ans if a.get("feedback",{}).get("score") is not None]; score=round(sum(a["feedback"]["score"] for a in scored)/len(scored)) if scored else None; out.append({"id":row[0],"role":row[1],"trackName":row[1],"questions":qs,"answers":ans,"createdAt":row[4],"status":"completed" if len(scored)>=len(qs) else "in_progress","questionCount":len(qs),"answeredCount":len(scored),"score":score,"report":json.loads(row[6]) if len(row)>6 and row[6] else None})
+        qs, ans = json.loads(row[2]), json.loads(row[3]); scored=[a for a in ans if a.get("feedback",{}).get("score") is not None]; score=round(sum(a["feedback"]["score"] for a in scored)/len(scored)) if scored else None; out.append({"id":row[0],"role":row[1],"trackName":row[1],"questions":qs,"answers":ans,"createdAt":row[4],"status":"completed" if row[7] else "in_progress","questionCount":len(qs),"answeredCount":len(scored),"score":score,"report":json.loads(row[6]) if row[6] else None})
     return {"sessions": out}
 @app.get("/{path:path}")
 async def spa(path: str): return FileResponse(PUBLIC / "index.html")
