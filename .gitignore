@@ -1,3 +1,5 @@
 node_modules/
 data.json
+data.sqlite3
+.venv/
 .DS_Store

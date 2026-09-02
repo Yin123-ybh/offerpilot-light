@@ -1,12 +1,13 @@
 @echo off
 setlocal
-where node >nul 2>nul
+where py >nul 2>nul
 if errorlevel 1 (
-  echo Please install Node.js 18 or newer from https://nodejs.org/
+  echo Please install Python 3.10 or newer from https://www.python.org/
   pause
   exit /b 1
 )
-if not exist node_modules\express npm install
+if not exist .venv\Scripts\python.exe py -3 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 echo Starting OfferPilot Light at http://localhost:5175
-npm start
+.venv\Scripts\python.exe -m uvicorn agent:app --host 127.0.0.1 --port 5175
 pause

@@ -1,0 +1,112 @@
+"""Lightweight local interview agent. No cloud state or server-side API keys are stored."""
+from __future__ import annotations
+import base64, json, os, re, sqlite3, time
+from pathlib import Path
+from typing import Any
+import fitz
+import httpx
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+ROOT = Path(__file__).resolve().parent
+DB = ROOT / "data.sqlite3"
+PUBLIC = ROOT / "public"
+app = FastAPI(title="OfferPilot Light Agent")
+app.mount("/assets", StaticFiles(directory=PUBLIC / "assets"), name="assets")
+
+def db():
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, role TEXT, questions TEXT, answers TEXT, created_at TEXT, resume_text TEXT)")
+    return conn
+
+def parse_json(text: str) -> dict[str, Any]:
+    text = text.strip().replace("```json", "").replace("```", "")
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start: raise ValueError("模型没有返回有效 JSON。")
+    return json.loads(text[start:end + 1])
+
+async def call_model(key: str, base: str, model: str, messages: list[dict[str, str]]) -> str:
+    if not key or not base or not model: raise ValueError("请先填写 API Key、服务地址和模型名称。")
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.post(base.rstrip("/") + "/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": model, "temperature": .3, "messages": messages, "response_format": {"type": "json_object"}})
+    if response.status_code >= 400: raise ValueError(response.json().get("error", {}).get("message", f"模型请求失败（{response.status_code}）"))
+    return response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+class Config(BaseModel):
+    apiKey: str = ""; baseUrl: str = ""; model: str = ""
+
+class Generate(Config):
+    role: str = "技术岗位"; description: str = ""; jobDescription: str = ""; resumeText: str = ""; questionCount: int = 15
+
+class Evaluate(Config):
+    sessionId: int | None = None; question: dict[str, Any]; answer: str
+
+class VoiceTurn(Config):
+    role: str = "技术岗位"; resumeText: str = ""; history: list[dict[str, str]] = Field(default_factory=list); answer: str = ""
+
+class VoiceFinish(Config):
+    role: str = "技术岗位"; history: list[dict[str, str]] = Field(default_factory=list)
+
+class InterviewAgent:
+    async def generate(self, x: Generate):
+        raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨、简历驱动的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"目标岗位：{x.role}\n岗位描述：{x.description or x.jobDescription}\n简历：{x.resumeText[:24000]}\n生成{x.questionCount}道题，覆盖基础八股、项目深挖、业务场景、系统设计、反问。每题返回 section、question、reference、difficulty。不要编造经历。格式：{{\"questions\":[...]}}"}])
+        questions = [q for q in parse_json(raw).get("questions", []) if q.get("question")]
+        if not questions: raise ValueError("模型没有返回有效题目。")
+        sid = int(time.time() * 1000); conn = db(); conn.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?)", (sid, x.role, json.dumps(questions, ensure_ascii=False), "[]", time.strftime("%Y-%m-%dT%H:%M:%S"), x.resumeText[:24000])); conn.commit(); conn.close()
+        return {"questions": questions, "session": {"id": sid, "role": x.role, "trackName": x.role, "questions": questions, "answers": [], "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"), "status": "in_progress", "questionCount": len(questions), "answeredCount": 0}}
+
+    async def evaluate(self, x: Evaluate):
+        q = x.question; raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是客观、精炼的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"题目：{q.get('question')}\n参考答案：{q.get('reference','')}\n候选人回答：{x.answer}\n只输出：{{\"score\":0-100,\"summary\":\"不超过80字\",\"strengths\":[\"最多2条\"],\"improvements\":[\"最多2条\"],\"followUp\":\"一个追问\"}}"}]); feedback = parse_json(raw)
+        if x.sessionId:
+            conn = db(); row = conn.execute("SELECT answers FROM sessions WHERE id=?", (x.sessionId,)).fetchone(); answers = json.loads(row[0]) if row else []; answers = [a for a in answers if a.get("question") != q.get("question")]; answers.append({"question": q.get("question"), "answer": x.answer, "feedback": feedback}); conn.execute("UPDATE sessions SET answers=? WHERE id=?", (json.dumps(answers, ensure_ascii=False), x.sessionId)); conn.commit(); conn.close()
+        return {"feedback": feedback}
+
+    async def voice_start(self, x: VoiceTurn):
+        raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是专业、克制的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"候选人目标岗位：{x.role}\n候选人简历：{x.resumeText[:16000]}\n开始语音模拟面试，结合简历提出第一个具体问题。只输出：{{\"opening\":\"开场和问题\",\"focus\":\"考察重点\"}}"}]); return parse_json(raw)
+
+    async def voice_turn(self, x: VoiceTurn):
+        history = "\n".join(("候选人" if h.get("role") == "candidate" else "面试官") + "：" + h.get("content", "") for h in x.history[-8:]); raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严格但有礼貌的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"岗位：{x.role}\n对话：\n{history}\n候选人刚刚回答：{x.answer}\n简短评价并提出递进追问。只输出：{{\"interviewerMessage\":\"评价加追问，不超过180字\",\"focus\":\"下一题考察重点\"}}"}]); return parse_json(raw)
+
+    async def voice_finish(self, x: VoiceFinish):
+        history = "\n".join(("候选人" if h.get("role") == "candidate" else "面试官") + "：" + h.get("content", "") for h in x.history[-16:]); raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨、客观的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"评估这场{x.role}语音模拟面试。对话：\n{history}\n只输出：{{\"score\":0-100,\"summary\":\"不超过100字\",\"strengths\":[\"最多3条\"],\"improvements\":[\"最多3条\"],\"nextStep\":\"下一次练习建议\"}}"}]); return parse_json(raw)
+
+agent = InterviewAgent()
+@app.post("/api/resume/extract")
+async def extract(payload: dict[str, Any]):
+    try:
+        raw = base64.b64decode(re.sub(r"^data:application/pdf;base64,", "", str(payload.get("base64", "")), flags=re.I)); doc = fitz.open(stream=raw, filetype="pdf"); text = "\n".join(page.get_text() for page in doc).strip()[:24000]
+        return {"text": text or "这是一份扫描型 PDF，未提取到可复制文字。请基于岗位信息提问，不要编造简历经历。", "fileName": payload.get("fileName", "resume.pdf"), "documentId": str(int(time.time()))}
+    except Exception as e: raise HTTPException(400, f"简历解析失败：{e}")
+
+@app.post("/api/interviews/generate")
+async def generate(x: Generate):
+    try: return await agent.generate(x)
+    except Exception as e: raise HTTPException(502, str(e))
+@app.post("/api/interviews/evaluate")
+async def evaluate(x: Evaluate):
+    try: return await agent.evaluate(x)
+    except Exception as e: raise HTTPException(502, str(e))
+@app.post("/api/voice/start")
+async def voice_start(x: VoiceTurn):
+    try: return await agent.voice_start(x)
+    except Exception as e: raise HTTPException(502, str(e))
+@app.post("/api/voice/turn")
+async def voice_turn(x: VoiceTurn):
+    try: return await agent.voice_turn(x)
+    except Exception as e: raise HTTPException(502, str(e))
+@app.post("/api/voice/finish")
+async def voice_finish(x: VoiceFinish):
+    try: return await agent.voice_finish(x)
+    except Exception as e: raise HTTPException(502, str(e))
+
+@app.get("/api/sessions")
+async def sessions():
+    conn = db(); rows = conn.execute("SELECT * FROM sessions ORDER BY id DESC").fetchall(); conn.close(); out=[]
+    for row in rows:
+        qs, ans = json.loads(row[2]), json.loads(row[3]); scored=[a for a in ans if a.get("feedback",{}).get("score") is not None]; score=round(sum(a["feedback"]["score"] for a in scored)/len(scored)) if scored else None; out.append({"id":row[0],"role":row[1],"trackName":row[1],"questions":qs,"answers":ans,"createdAt":row[4],"status":"completed" if len(scored)>=len(qs) else "in_progress","questionCount":len(qs),"answeredCount":len(scored),"score":score})
+    return {"sessions": out}
+@app.get("/{path:path}")
+async def spa(path: str): return FileResponse(PUBLIC / "index.html")
