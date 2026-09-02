@@ -97,7 +97,7 @@ async def report(session_id: int, x: Config):
     if not row: raise HTTPException(404, "训练记录不存在")
     if row[3]: return json.loads(row[3])
     answers = json.loads(row[2]); conversation = "\n".join(f"题目：{a.get('question')}\n回答：{a.get('answer')}\n评分：{a.get('feedback',{}).get('score')}" for a in answers)
-    raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨的中文面试教练，只输出 JSON。"},{"role":"user","content":f"岗位：{row[0]}\n完整训练回答：\n{conversation}\n生成复盘报告，只输出：{{\"headline\":\"一句总结\",\"score\":0-100,\"summary\":\"不超过120字\",\"strengths\":[\"最多3条\"],\"weaknesses\":[{{\"name\":\"能力项\",\"score\":0-100,\"advice\":\"建议\"}}],\"nextStep\":\"下一步计划\"}}"}]); result = parse_json(raw)
+    raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨的中文技术面试研究员，只输出 JSON，不编造回答中没有的事实。"},{"role":"user","content":f"岗位：{row[0]}\n已评分回答证据：\n{conversation}\n写一份有论文分析感的复盘：结论必须基于具体回答的覆盖度、准确性、表达结构与技术深度；优点和缺口要可验证，建议要可执行。只输出：{{\"headline\":\"结论式标题\",\"score\":0-100,\"summary\":\"120字内的分析摘要\",\"strengths\":[\"3条基于证据的发现\"],\"weaknesses\":[{{\"name\":\"能力维度\",\"score\":0-100,\"advice\":\"针对性的训练建议\"}}],\"nextStep\":\"下一轮可执行训练计划\"}}"}]); result = parse_json(raw)
     conn = db(); conn.execute("UPDATE sessions SET report=? WHERE id=?", (json.dumps(result, ensure_ascii=False), session_id)); conn.commit(); conn.close(); return result
 @app.post("/api/voice/start")
 async def voice_start(x: VoiceTurn):
