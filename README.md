@@ -4,6 +4,22 @@
 
 ## 一键启动
 
+### macOS / Linux
+
+```bash
+git clone https://github.com/Yin123-ybh/offerpilot-light.git
+cd offerpilot-light
+sh start.sh
+```
+
+### Windows
+
+```powershell
+git clone https://github.com/Yin123-ybh/offerpilot-light.git
+cd offerpilot-light
+start.cmd
+```
+
 先安装 Node.js 18+。首次运行会自动安装依赖，之后双击脚本即可启动：
 
 - Windows：双击 `start.cmd`
