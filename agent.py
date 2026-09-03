@@ -149,5 +149,31 @@ async def sessions():
     for row in rows:
         qs, ans = json.loads(row[2]), json.loads(row[3]); scored=[a for a in ans if a.get("feedback",{}).get("score") is not None]; score=round(sum(a["feedback"]["score"] for a in scored)/len(scored)) if scored else None; out.append({"id":row[0],"role":row[1],"trackName":row[1],"questions":qs,"answers":ans,"createdAt":row[4],"status":"completed" if row[7] else "in_progress","questionCount":len(qs),"answeredCount":len(scored),"score":score,"report":json.loads(row[6]) if row[6] else None})
     return {"sessions": out}
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: int):
+    conn = db(); result = conn.execute("DELETE FROM sessions WHERE id=?", (session_id,)); conn.commit(); conn.close()
+    if not result.rowcount: raise HTTPException(404, "找不到这套训练记录。")
+    return {"ok": True, "sessionId": session_id}
+
+@app.delete("/api/sessions/{session_id}/questions")
+async def delete_question(session_id: int, payload: dict[str, Any]):
+    question = str(payload.get("question", "")).strip()
+    conn = db(); row = conn.execute("SELECT questions,answers FROM sessions WHERE id=?", (session_id,)).fetchone()
+    if not row: conn.close(); raise HTTPException(404, "找不到这套训练记录。")
+    questions, answers = json.loads(row[0]), json.loads(row[1])
+    remaining = [item for item in questions if item.get("question") != question]
+    if len(remaining) == len(questions): conn.close(); raise HTTPException(404, "找不到要删除的题目。")
+    remaining_answers = [item for item in answers if item.get("question") != question]
+    # Deleting evidence invalidates any conclusion generated from the original set.
+    conn.execute("UPDATE sessions SET questions=?, answers=?, report=NULL, finalized=0 WHERE id=?", (json.dumps(remaining, ensure_ascii=False), json.dumps(remaining_answers, ensure_ascii=False), session_id)); conn.commit(); conn.close()
+    return {"ok": True, "sessionId": session_id, "questionCount": len(remaining)}
+
+@app.post("/api/models/test")
+async def test_model(x: Config):
+    try:
+        await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"user", "content":"只回复 {\"reply\":\"模型可用\"}"}])
+        return {"ok": True, "reply": "模型可用"}
+    except Exception as e: raise HTTPException(502, str(e))
 @app.get("/{path:path}")
 async def spa(path: str): return FileResponse(PUBLIC / "index.html")
