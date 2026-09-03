@@ -43,12 +43,26 @@ def parse_json(text: str) -> dict[str, Any]:
     if start < 0 or end < start: raise ValueError("模型没有返回有效 JSON。")
     return json.loads(text[start:end + 1])
 
-async def call_model(key: str, base: str, model: str, messages: list[dict[str, str]]) -> str:
+async def call_model(key: str, base: str, model: str, messages: list[dict[str, str]], json_mode: bool = True) -> str:
     if not key or not base or not model: raise ValueError("请先填写 API Key、服务地址和模型名称。")
+    payload = {"model": model, "temperature": .3, "messages": messages}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(base.rstrip("/") + "/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": model, "temperature": .3, "messages": messages, "response_format": {"type": "json_object"}})
-    if response.status_code >= 400: raise ValueError(response.json().get("error", {}).get("message", f"模型请求失败（{response.status_code}）"))
-    return response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        response = await client.post(base.rstrip("/") + "/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload)
+    if response.status_code >= 400:
+        try: detail = response.json().get("error", {}).get("message") or response.text
+        except ValueError: detail = response.text
+        status = response.status_code
+        if status == 401:
+            raise ValueError(f"认证失败（HTTP 401）：当前 API Key 不属于该服务地址，或已失效。服务返回：{detail[:240]}")
+        if status == 404 or "model" in str(detail).lower():
+            raise ValueError(f"模型不可用（HTTP {status}）：请确认模型名称与当前账号权限。服务返回：{detail[:240]}")
+        if status == 429:
+            raise ValueError(f"请求受限或额度不足（HTTP 429）。服务返回：{detail[:240]}")
+        raise ValueError(f"模型服务请求失败（HTTP {status}）。服务返回：{detail[:240]}")
+    try: return response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+    except ValueError as error: raise ValueError("模型响应不是兼容的 OpenAI Chat Completions 格式。") from error
 
 class Config(BaseModel):
     apiKey: str = ""; baseUrl: str = ""; model: str = ""
@@ -172,8 +186,8 @@ async def delete_question(session_id: int, payload: dict[str, Any]):
 @app.post("/api/models/test")
 async def test_model(x: Config):
     try:
-        await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"user", "content":"只回复 {\"reply\":\"模型可用\"}"}])
-        return {"ok": True, "reply": "模型可用"}
+        reply = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"user", "content":"仅回复 CONNECTED。"}], json_mode=False)
+        return {"ok": True, "reply": reply.strip()[:80] or "CONNECTED"}
     except Exception as e: raise HTTPException(502, str(e))
 @app.get("/{path:path}")
 async def spa(path: str): return FileResponse(PUBLIC / "index.html")
