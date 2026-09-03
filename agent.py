@@ -67,7 +67,7 @@ class VoiceFinish(Config):
 
 class InterviewAgent:
     async def generate(self, x: Generate):
-        raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨、简历驱动的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"目标岗位：{x.role}\n岗位描述：{x.description or x.jobDescription}\n简历：{x.resumeText[:24000]}\n生成{x.questionCount}道题，覆盖基础八股、项目深挖、业务场景、系统设计、反问。每题返回 section、question、reference、difficulty。不要编造经历。格式：{{\"questions\":[...]}}"}])
+        raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨、简历驱动的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"目标岗位：{x.role}\n岗位描述：{x.description or x.jobDescription}\n简历内容（只可使用其中明确出现的经历、项目、技术或职责）：{x.resumeText[:24000]}\n生成{x.questionCount}道题，覆盖基础八股、项目/实习深挖、业务场景、系统设计、反问。每题必须返回 section、tag、difficulty、question、reference、rubric 数组、resumeEvidence。resumeEvidence 是 20-80 字的具体简历依据：项目题必须点名对应项目或技术事实；通用八股题写“岗位要求：...”或“简历技术栈：...”，不能留空、更不能虚构。格式：{{\"questions\":[...]}}"}])
         questions = [q for q in parse_json(raw).get("questions", []) if q.get("question")]
         if not questions: raise ValueError("模型没有返回有效题目。")
         sid = int(time.time() * 1000); conn = db(); conn.execute("INSERT INTO sessions (id,role,questions,answers,created_at,resume_text,report,finalized) VALUES (?,?,?,?,?,?,?,?)", (sid, x.role, json.dumps(questions, ensure_ascii=False), "[]", time.strftime("%Y-%m-%dT%H:%M:%S"), x.resumeText[:24000], None, 0)); conn.commit(); conn.close()
