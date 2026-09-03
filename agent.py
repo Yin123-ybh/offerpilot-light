@@ -50,6 +50,11 @@ async def call_model(key: str, base: str, model: str, messages: list[dict[str, s
         payload["response_format"] = {"type": "json_object"}
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(base.rstrip("/") + "/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload)
+        # Some compatible providers/models support chat completions but not OpenAI's
+        # JSON mode. The prompts already demand JSON, so retry once without that option.
+        if response.status_code == 400 and json_mode:
+            payload.pop("response_format", None)
+            response = await client.post(base.rstrip("/") + "/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload)
     if response.status_code >= 400:
         try: detail = response.json().get("error", {}).get("message") or response.text
         except ValueError: detail = response.text
