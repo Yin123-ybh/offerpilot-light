@@ -14,12 +14,41 @@ async function readData() { try { return JSON.parse(await fs.readFile(dataFile, 
 async function writeData(data) { await fs.writeFile(dataFile, JSON.stringify(data, null, 2), 'utf8') }
 async function model({ apiKey, baseUrl, model, messages }) {
   if (!apiKey || !baseUrl || !model) throw new Error('请先填写 API Key、服务地址和模型名称。')
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, temperature: .3, messages, response_format: { type: 'json_object' } }) })
+  const requestMessages = messages.map(message => message.role === 'user' && /生成\d*道题/.test(message.content)
+    ? { ...message, content: `${message.content}\n每题必须额外返回 resumeEvidence 字段，写出 20-80 字的具体简历依据；项目题点名简历中的项目或技术事实，通用题说明对应技术栈或岗位要求，不得编造。` }
+    : message)
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify({ model, temperature: .3, messages: requestMessages, response_format: { type: 'json_object' } }) })
   const text = await response.text(); let payload; try { payload = JSON.parse(text) } catch { throw new Error(`模型返回格式异常：${text.slice(0, 180)}`) }
   if (!response.ok) throw new Error(payload.error?.message || `模型请求失败（${response.status}）`)
   return payload.choices?.[0]?.message?.content || ''
 }
 function parseJson(text) { const start = text.indexOf('{'); const end = text.lastIndexOf('}'); return JSON.parse(text.slice(start, end + 1)) }
+app.post('/api/models/test', async (req, res) => {
+  try {
+    const { apiKey, baseUrl, model: modelName } = req.body || {}
+    if (!apiKey || !baseUrl || !modelName) throw new Error('请填写 API Key、服务地址和模型名称。')
+    let response
+    try {
+      response = await fetch(`${String(baseUrl).replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: modelName, messages: [{ role: 'user', content: '请只回复 OK' }], temperature: 0 })
+      })
+    } catch {
+      throw new Error('无法连接服务地址，请检查网络或服务地址。')
+    }
+    const text = await response.text()
+    let payload = {}
+    try { payload = JSON.parse(text) } catch { /* Preserve a useful status for non-JSON upstream responses. */ }
+    if (!response.ok) {
+      const detail = payload.error?.message || payload.message || text.slice(0, 180)
+      throw new Error(`模型连接失败（${response.status}）：${detail}`)
+    }
+    res.json({ reply: payload.choices?.[0]?.message?.content || '模型可用' })
+  } catch (error) {
+    res.status(502).json({ error: error.message })
+  }
+})
 app.post('/api/extract', upload.single('resume'), async (req, res) => { try { if (!req.file) throw new Error('请选择 PDF 简历。'); const parsed = await pdfParse(req.file.buffer); res.json({ text: parsed.text.slice(0, 24000), fileName: req.file.originalname }) } catch (error) { res.status(400).json({ error: error.message }) } })
 app.post('/api/resume/extract', async (req, res) => { try { const { fileName = 'resume.pdf', base64 } = req.body; if (!base64) throw new Error('请选择 PDF 简历。'); const cleanBase64 = String(base64).replace(/^data:application\/pdf;base64,/i, '').replace(/\s/g, ''); const buffer = Buffer.from(cleanBase64, 'base64'); if (buffer.length < 16 || buffer.subarray(0, 4).toString() !== '%PDF') throw new Error('文件不是有效的 PDF，请重新选择简历。'); let text = ''; try { const parsed = await pdfParse(buffer); text = String(parsed.text || '').replace(/\u0000/g, '').trim().slice(0, 24000) } catch { /* Some PDFs have valid pages but unsupported embedded fonts. */ } if (!text) text = `未能从文件“${fileName}”提取可复制文字。这是一份可能包含扫描图片或特殊字体的 PDF，请根据岗位信息生成通用技术面试题，并在无法确认简历经历时不要编造。`; res.json({ text, fileName, documentId: `${Date.now()}-${fileName}`, extracted: !text.startsWith('未能从文件') }) } catch (error) { res.status(400).json({ error: error.message }) } })
 app.post('/api/generate', async (req, res) => { try { const { apiKey, baseUrl, model: modelName, role, description, resumeText, count = 15 } = req.body; const raw = await model({ apiKey, baseUrl, model: modelName, messages: [{ role: 'system', content: '你是严谨、简历驱动的中文技术面试官，只输出 JSON。' }, { role: 'user', content: `目标岗位：${role}\n岗位描述：${description}\n简历：${String(resumeText).slice(0, 24000)}\n生成${count}道题，覆盖基础八股、项目深挖、业务场景、系统设计、反问。每题返回 section、question、reference、difficulty。不要编造简历经历。格式：{"questions":[...]}` }] }); const questions = parseJson(raw).questions?.filter(item => item.question); if (!questions?.length) throw new Error('模型没有返回有效题目。'); const session = { id: Date.now(), role, questions, answers: [], createdAt: new Date().toISOString() }; const data = await readData(); data.sessions.unshift(session); await writeData(data); res.json({ session }) } catch (error) { res.status(502).json({ error: error.message }) } })
@@ -32,4 +61,5 @@ app.post('/api/voice/finish', async (req, res) => { try { const { apiKey, baseUr
 app.get('/api/sessions', async (_req, res) => { const data = await readData(); data.sessions = (data.sessions || []).map(s => { const answers = s.answers || []; const scored = answers.filter(a => Number.isFinite(Number(a.feedback?.score))); const score = scored.length ? Math.round(scored.reduce((n, a) => n + Number(a.feedback.score), 0) / scored.length) : null; return { ...s, status: scored.length >= (s.questions?.length || 0) && (s.questions?.length || 0) > 0 ? 'completed' : 'in_progress', questionCount: s.questions?.length || 0, answeredCount: scored.length, score, trackName: s.role || '技术岗位' } }); res.json(data) })
 app.delete('/api/sessions/:id', async (req, res) => { const data = await readData(); const id = Number(req.params.id); const before = data.sessions.length; data.sessions = data.sessions.filter(s => Number(s.id) !== id); if (data.sessions.length === before) return res.status(404).json({ error: '找不到这套训练记录。' }); await writeData(data); res.json({ ok: true, sessionId: id }) })
 app.get('*', (_req, res) => res.sendFile(path.join(root, 'public/index.html')))
-app.listen(process.env.PORT || 5175, () => console.log(`OfferPilot Light running at http://localhost:${process.env.PORT || 5175}`))
+const port = process.env.PORT || 5175
+app.listen(port, '127.0.0.1', () => console.log(`OfferPilot Light running at http://localhost:${port}`))
