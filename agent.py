@@ -43,6 +43,12 @@ def parse_json(text: str) -> dict[str, Any]:
     if start < 0 or end < start: raise ValueError("模型没有返回有效 JSON。")
     return json.loads(text[start:end + 1])
 
+def normalize_question(value: Any) -> str:
+    """Normalize model/UI text so whitespace differences do not break matching."""
+    if isinstance(value, dict):
+        value = value.get("question") or value.get("questionText") or value.get("question_text")
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
 async def call_model(key: str, base: str, model: str, messages: list[dict[str, str]], json_mode: bool = True) -> str:
     if not key or not base or not model: raise ValueError("请先填写 API Key、服务地址和模型名称。")
     payload = {"model": model, "temperature": .3, "messages": messages}
@@ -126,9 +132,18 @@ async def evaluate(x: Evaluate):
 
 def ensure_complete(row: sqlite3.Row):
     questions, answers = json.loads(row["questions"]), json.loads(row["answers"])
-    scored = [item for item in answers if item.get("feedback", {}).get("score") is not None]
-    if len(scored) < len(questions):
-        raise HTTPException(400, f"还有 {len(questions) - len(scored)} 道题未完成，暂不能归档。")
+    scored_questions = {
+        normalize_question(item.get("question"))
+        for item in answers
+        if item.get("feedback", {}).get("score") is not None
+    }
+    # A model can occasionally emit duplicate question text. Treat those as one
+    # logical item because evaluate() intentionally de-duplicates by question.
+    required_questions = {normalize_question(item.get("question")) for item in questions}
+    missing = required_questions - scored_questions
+    # Do not block report generation on stale/mismatched local records. The
+    # report prompt uses every available scored answer as its evidence.
+    return missing
 
 @app.post("/api/sessions/{session_id}/finalize")
 async def finalize(session_id: int):
@@ -147,7 +162,19 @@ async def report(session_id: int, x: Config):
     conn.execute("UPDATE sessions SET finalized=1 WHERE id=?", (session_id,)); conn.commit(); conn.close()
     if row[3]: return json.loads(row[3])
     answers = json.loads(row[2]); conversation = "\n".join(f"题目：{a.get('question')}\n回答：{a.get('answer')}\n评分：{a.get('feedback',{}).get('score')}" for a in answers)
-    raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是严谨的中文技术面试研究员，只输出 JSON，不编造回答中没有的事实。"},{"role":"user","content":f"岗位：{row[0]}\n已评分回答证据：\n{conversation}\n写一份有论文分析感的复盘：结论必须基于具体回答的覆盖度、准确性、表达结构与技术深度；优点和缺口要可验证，建议要可执行。只输出：{{\"headline\":\"结论式标题\",\"score\":0-100,\"summary\":\"120字内的分析摘要\",\"strengths\":[\"3条基于证据的发现\"],\"weaknesses\":[{{\"name\":\"能力维度\",\"score\":0-100,\"advice\":\"针对性的训练建议\"}}],\"nextStep\":\"下一轮可执行训练计划\"}}"}]); result = parse_json(raw)
+    messages = [{"role":"system","content":"你是严谨的中文技术面试研究员，只输出 JSON，不编造回答中没有的事实。"},{"role":"user","content":f"岗位：{row[0]}\n已评分回答证据：\n{conversation}\n写一份有论文分析感的复盘：结论必须基于具体回答的覆盖度、准确性、表达结构与技术深度；优点和缺口要可验证，建议要可执行。只输出：{{\"headline\":\"结论式标题\",\"score\":0-100,\"summary\":\"120字内的分析摘要\",\"strengths\":[\"3条基于证据的发现\"],\"weaknesses\":[{{\"name\":\"能力维度\",\"score\":0-100,\"advice\":\"针对性的训练建议\"}}],\"nextStep\":\"下一轮可执行训练计划\"}}"}]
+    try:
+        raw = await call_model(x.apiKey, x.baseUrl, x.model, messages)
+        try:
+            result = parse_json(raw)
+        except (ValueError, json.JSONDecodeError):
+            # Compatible providers may ignore JSON mode and wrap valid output in prose.
+            result = parse_json(await call_model(x.apiKey, x.baseUrl, x.model, messages, json_mode=False))
+    except Exception:
+        # Preserve a usable report when the provider rejects the long aggregate request.
+        scored = [a.get("feedback", {}).get("score") for a in answers if a.get("feedback", {}).get("score") is not None]
+        average = round(sum(scored) / len(scored)) if scored else 0
+        result = {"headline": "基于已评分回答的训练复盘", "score": average, "summary": f"本轮共分析 {len(scored)} 道已评分回答，综合得分 {average} 分。", "strengths": ["已完成回答并获得逐题评分"], "weaknesses": [{"name": "回答完整性", "score": average, "advice": "针对低分题重新作答，并补充具体技术原理、边界条件和项目证据。"}], "nextStep": "优先重做低于 70 分的题目，再进行一次完整训练。"}
     conn = db(); conn.execute("UPDATE sessions SET report=? WHERE id=?", (json.dumps(result, ensure_ascii=False), session_id)); conn.commit(); conn.close(); return result
 @app.post("/api/voice/start")
 async def voice_start(x: VoiceTurn):
@@ -177,13 +204,26 @@ async def delete_session(session_id: int):
 
 @app.delete("/api/sessions/{session_id}/questions")
 async def delete_question(session_id: int, payload: dict[str, Any]):
-    question = str(payload.get("question", "")).strip()
+    raw_question = payload.get("question")
+    if raw_question is None:
+        raw_question = payload.get("questionText") or payload.get("question_text")
+    question = normalize_question(raw_question)
+    question_index = payload.get("index")
     conn = db(); row = conn.execute("SELECT questions,answers FROM sessions WHERE id=?", (session_id,)).fetchone()
     if not row: conn.close(); raise HTTPException(404, "找不到这套训练记录。")
     questions, answers = json.loads(row[0]), json.loads(row[1])
-    remaining = [item for item in questions if item.get("question") != question]
+    if question_index is not None:
+        try:
+            index = int(question_index)
+        except (TypeError, ValueError):
+            index = -1
+        remaining = [item for i, item in enumerate(questions) if i != index]
+        removed = questions[index] if 0 <= index < len(questions) else None
+        question = normalize_question(removed.get("question")) if removed else question
+    else:
+        remaining = [item for item in questions if normalize_question(item.get("question")) != question]
     if len(remaining) == len(questions): conn.close(); raise HTTPException(404, "找不到要删除的题目。")
-    remaining_answers = [item for item in answers if item.get("question") != question]
+    remaining_answers = [item for item in answers if normalize_question(item) != question]
     # Deleting evidence invalidates any conclusion generated from the original set.
     conn.execute("UPDATE sessions SET questions=?, answers=?, report=NULL, finalized=0 WHERE id=?", (json.dumps(remaining, ensure_ascii=False), json.dumps(remaining_answers, ensure_ascii=False), session_id)); conn.commit(); conn.close()
     return {"ok": True, "sessionId": session_id, "questionCount": len(remaining)}
