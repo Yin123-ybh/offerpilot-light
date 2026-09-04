@@ -17,7 +17,7 @@ jobs:
           - os: windows-latest
             artifact: OfferPilotLight-windows
             archive: OfferPilotLight-windows.zip
-          - os: macos-latest
+          - os: macos-13
             artifact: OfferPilotLight-macos
             archive: OfferPilotLight-macos.zip
     runs-on: ${{ matrix.os }}
