@@ -19,7 +19,9 @@ app.mount("/assets", StaticFiles(directory=PUBLIC / "assets"), name="assets")
 def db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, role TEXT, questions TEXT, answers TEXT, created_at TEXT, resume_text TEXT, report TEXT, finalized INTEGER DEFAULT 0)")
+    conn.execute("CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, role TEXT, questions TEXT, answers TEXT, created_at TEXT, resume_text TEXT, report TEXT, finalized INTEGER DEFAULT 0, dismissed_mistakes TEXT DEFAULT '[]')")
+    try: conn.execute("ALTER TABLE sessions ADD COLUMN dismissed_mistakes TEXT DEFAULT '[]'")
+    except sqlite3.OperationalError: pass
     try: conn.execute("ALTER TABLE sessions ADD COLUMN report TEXT")
     except sqlite3.OperationalError: pass
     added_finalized = False
@@ -101,7 +103,7 @@ class InterviewAgent:
     async def evaluate(self, x: Evaluate):
         q = x.question; raw = await call_model(x.apiKey, x.baseUrl, x.model, [{"role":"system","content":"你是客观、精炼的中文技术面试官，只输出 JSON。"},{"role":"user","content":f"题目：{q.get('question')}\n参考答案：{q.get('reference','')}\n候选人回答：{x.answer}\n只输出：{{\"score\":0-100,\"summary\":\"不超过80字\",\"strengths\":[\"最多2条\"],\"improvements\":[\"最多2条\"],\"followUp\":\"一个追问\"}}"}]); feedback = parse_json(raw)
         if x.sessionId:
-            conn = db(); row = conn.execute("SELECT answers FROM sessions WHERE id=?", (x.sessionId,)).fetchone(); answers = json.loads(row[0]) if row else []; answers = [a for a in answers if a.get("question") != q.get("question")]; answers.append({"question": q.get("question"), "answer": x.answer, "feedback": feedback}); conn.execute("UPDATE sessions SET answers=? WHERE id=?", (json.dumps(answers, ensure_ascii=False), x.sessionId)); conn.commit(); conn.close()
+            conn = db(); row = conn.execute("SELECT answers,dismissed_mistakes FROM sessions WHERE id=?", (x.sessionId,)).fetchone(); answers = json.loads(row[0]) if row else []; answers = [a for a in answers if a.get("question") != q.get("question")]; answers.append({"question": q.get("question"), "answer": x.answer, "feedback": feedback}); dismissed = set(json.loads(row[1] or "[]")) if row else set(); dismissed.discard(normalize_question(q.get("question"))); conn.execute("UPDATE sessions SET answers=?, dismissed_mistakes=? WHERE id=?", (json.dumps(answers, ensure_ascii=False), json.dumps(sorted(dismissed), ensure_ascii=False), x.sessionId)); conn.commit(); conn.close()
         return {"feedback": feedback}
 
     async def voice_start(self, x: VoiceTurn):
@@ -147,7 +149,7 @@ def ensure_complete(row: sqlite3.Row):
 
 @app.post("/api/sessions/{session_id}/finalize")
 async def finalize(session_id: int):
-    conn = db(); row = conn.execute("SELECT questions,answers FROM sessions WHERE id=?", (session_id,)).fetchone()
+    conn = db(); row = conn.execute("SELECT questions,answers,dismissed_mistakes FROM sessions WHERE id=?", (session_id,)).fetchone()
     if not row:
         conn.close(); raise HTTPException(404, "训练记录不存在")
     ensure_complete(row)
@@ -193,7 +195,7 @@ async def voice_finish(x: VoiceFinish):
 async def sessions():
     conn = db(); rows = conn.execute("SELECT * FROM sessions ORDER BY id DESC").fetchall(); conn.close(); out=[]
     for row in rows:
-        qs, ans = json.loads(row[2]), json.loads(row[3]); scored=[a for a in ans if a.get("feedback",{}).get("score") is not None]; score=round(sum(a["feedback"]["score"] for a in scored)/len(scored)) if scored else None; out.append({"id":row[0],"role":row[1],"trackName":row[1],"questions":qs,"answers":ans,"createdAt":row[4],"status":"completed" if row[7] else "in_progress","questionCount":len(qs),"answeredCount":len(scored),"score":score,"report":json.loads(row[6]) if row[6] else None})
+        qs, ans = json.loads(row[2]), json.loads(row[3]); dismissed=set(json.loads(row[8] or "[]")); visible=[a for a in ans if normalize_question(a) not in dismissed]; scored=[a for a in visible if a.get("feedback",{}).get("score") is not None]; score=round(sum(a["feedback"]["score"] for a in scored)/len(scored)) if scored else None; out.append({"id":row[0],"role":row[1],"trackName":row[1],"questions":qs,"answers":visible,"createdAt":row[4],"status":"completed" if row[7] else "in_progress","questionCount":len(qs),"answeredCount":len(scored),"score":score,"report":json.loads(row[6]) if row[6] else None})
     return {"sessions": out}
 
 @app.delete("/api/sessions/{session_id}")
@@ -223,10 +225,10 @@ async def delete_question(session_id: int, payload: dict[str, Any]):
     else:
         remaining = [item for item in questions if normalize_question(item.get("question")) != question]
     if len(remaining) == len(questions): conn.close(); raise HTTPException(404, "找不到要删除的题目。")
-    remaining_answers = [item for item in answers if normalize_question(item) != question]
-    # Deleting evidence invalidates any conclusion generated from the original set.
-    conn.execute("UPDATE sessions SET questions=?, answers=?, report=NULL, finalized=0 WHERE id=?", (json.dumps(remaining, ensure_ascii=False), json.dumps(remaining_answers, ensure_ascii=False), session_id)); conn.commit(); conn.close()
-    return {"ok": True, "sessionId": session_id, "questionCount": len(remaining)}
+    if not any(normalize_question(item.get("question")) == question for item in questions): conn.close(); raise HTTPException(404, "找不到要删除的题目。")
+    dismissed = set(json.loads(row[2] or "[]")) if len(row) > 2 else set(); dismissed.add(question)
+    conn.execute("UPDATE sessions SET dismissed_mistakes=? WHERE id=?", (json.dumps(sorted(dismissed), ensure_ascii=False), session_id)); conn.commit(); conn.close()
+    return {"ok": True, "sessionId": session_id, "questionCount": len(questions)}
 
 @app.post("/api/models/test")
 async def test_model(x: Config):
