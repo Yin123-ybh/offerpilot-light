@@ -36,7 +36,7 @@ cd offerpilot-light
 start.cmd
 ```
 
-也可以下载 ZIP 并解压，然后直接双击 `start.cmd`。
+也可以下载 ZIP 并解压，然后直接双击 `start.cmd`。脚本会自动创建虚拟环境、安装依赖、启动本机服务并打开浏览器。
 
 ### macOS / Linux
 
@@ -47,13 +47,15 @@ chmod +x start.sh
 ./start.sh
 ```
 
-首次启动会自动创建 `.venv` 虚拟环境并安装依赖。终端出现启动提示后，在浏览器打开：
+首次启动会自动创建 `.venv` 虚拟环境并安装依赖，服务就绪后会自动打开浏览器；后续启动只有在 `requirements.txt` 变化时才会重新安装依赖：
 
 ```text
 http://localhost:5175
 ```
 
 后续启动无需重复安装，Windows 双击 `start.cmd`；macOS/Linux 在项目目录执行 `./start.sh` 即可。
+
+脚本默认只监听本机 `127.0.0.1:5175`。需要更换端口时，可在 macOS/Linux 执行 `PORT=5180 ./start.sh`，Windows 可设置环境变量 `set PORT=5180` 后运行 `start.cmd`。
 
 ## 配置模型
 
