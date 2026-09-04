@@ -33,6 +33,9 @@ jobs:
       - name: Build macOS app
         if: runner.os == 'macOS'
         run: pyinstaller --clean --noconfirm --onedir --name OfferPilotLight --add-data "public:public" --hidden-import agent --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --collect-all pymupdf launcher.py
+      - name: Sign macOS app contents
+        if: runner.os == 'macOS'
+        run: codesign --deep --force --verbose --sign - dist/OfferPilotLight
       - name: Archive Windows
         if: runner.os == 'Windows'
         shell: bash
