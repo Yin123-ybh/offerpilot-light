@@ -5,3 +5,6 @@ data.sqlite3
 __pycache__/
 *.pyc
 .DS_Store
+build/
+dist/
+*.spec.bak

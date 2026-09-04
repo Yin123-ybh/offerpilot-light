@@ -1,0 +1,45 @@
+name: Build desktop apps
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: OfferPilotLight-windows
+            archive: OfferPilotLight-windows.zip
+          - os: macos-latest
+            artifact: OfferPilotLight-macos
+            archive: OfferPilotLight-macos.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - run: pyinstaller --clean --noconfirm offerpilot.spec
+      - name: Archive Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: 7z a "${{ matrix.archive }}" dist/OfferPilotLight
+      - name: Archive macOS
+        if: runner.os == 'macOS'
+        run: zip -r "${{ matrix.archive }}" dist/OfferPilotLight
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive }}

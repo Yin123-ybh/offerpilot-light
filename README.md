@@ -18,6 +18,10 @@ OfferPilot Light 面向想在自己电脑上快速练习技术面试的用户。
 
 ## 快速开始
 
+### 独立应用包
+
+仓库提供 PyInstaller 构建配置。推送形如 `v1.0.0` 的版本标签后，GitHub Actions 会自动构建 Windows 和 macOS 压缩包并发布到 Releases。使用独立应用包不需要用户预装 Python；下载对应系统的压缩包、解压并运行 `OfferPilotLight` 即可。
+
 ### 前置条件
 
 只需安装 **Python 3.10 或更高版本**。
