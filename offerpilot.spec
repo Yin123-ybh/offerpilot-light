@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 datas = [("public", "public")]
 binaries = []
 hiddenimports = []
-for package in ("fitz", "uvicorn", "pymupdf"):
+for package in ("agent", "fitz", "uvicorn", "pymupdf"):
     try:
         d, b, h = collect_all(package)
         datas += d
